@@ -145,7 +145,7 @@ function migrateSqlDatabase(db) {
  * Motor nativo de respaldo en puro Node.js (sin dependencias externas ni compiladores C++)
  * por si en un equipo Windows falla la instalación de better-sqlite3.
  */
-function createPureNodeStore(dbPath) {
+function createPureNodeStore(dbPath, { memoryOnly = false } = {}) {
   const defaultState = {
     settings: {
       id: 1,
@@ -177,35 +177,50 @@ function createPureNodeStore(dbPath) {
   };
 
   let state = JSON.parse(JSON.stringify(defaultState));
+  let dirty = false;
+
+  const normalizeState = (parsed) => {
+    const p = parsed && typeof parsed === 'object' ? parsed : {};
+    const advisors = Array.isArray(p.advisors) ? p.advisors : [];
+    const logs = Array.isArray(p.assignment_log) ? p.assignment_log : [];
+    const events = Array.isArray(p.assignment_events) ? p.assignment_events : [];
+    const maxId = (arr) => arr.reduce((m, r) => Math.max(m, Number(r?.id) || 0), 0);
+    return {
+      settings: { ...defaultState.settings, ...(p.settings || {}) },
+      departments: Array.isArray(p.departments) ? p.departments : [],
+      advisors,
+      assignment_log: logs,
+      assignment_events: events,
+      ticket_owner: p.ticket_owner && typeof p.ticket_owner === 'object' ? p.ticket_owner : {},
+      seq: {
+        advisors: Math.max(Number(p.seq?.advisors) || 0, maxId(advisors)),
+        assignment_log: Math.max(Number(p.seq?.assignment_log) || 0, maxId(logs)),
+        assignment_events: Math.max(Number(p.seq?.assignment_events) || 0, maxId(events))
+      }
+    };
+  };
 
   const load = () => {
+    if (memoryOnly) return;
     if (!fs.existsSync(dbPath)) {
-      save();
+      save(false);
       return;
     }
     try {
       const raw = fs.readFileSync(dbPath, 'utf8');
       if (raw && raw.trim().startsWith('{')) {
-        const parsed = JSON.parse(raw);
-        state = {
-          settings: { ...defaultState.settings, ...(parsed.settings || {}) },
-          departments: Array.isArray(parsed.departments) ? parsed.departments : [],
-          advisors: Array.isArray(parsed.advisors) ? parsed.advisors : [],
-          assignment_log: Array.isArray(parsed.assignment_log) ? parsed.assignment_log : [],
-          assignment_events: Array.isArray(parsed.assignment_events) ? parsed.assignment_events : [],
-          ticket_owner:
-            parsed.ticket_owner && typeof parsed.ticket_owner === 'object' ? parsed.ticket_owner : {},
-          seq: { ...defaultState.seq, ...(parsed.seq || {}) }
-        };
+        state = normalizeState(JSON.parse(raw));
       } else {
-        save();
+        save(false);
       }
     } catch {
-      save();
+      save(false);
     }
   };
 
-  const save = () => {
+  const save = (markDirty = true) => {
+    if (markDirty) dirty = true;
+    if (memoryOnly) return;
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(dbPath, JSON.stringify(state, null, 2), 'utf8');
@@ -215,6 +230,23 @@ function createPureNodeStore(dbPath) {
 
   return {
     engine: 'node-native-store',
+    isDirty() {
+      return dirty;
+    },
+    resetDirty() {
+      dirty = false;
+    },
+    getStateSnapshot() {
+      load();
+      return JSON.parse(JSON.stringify(state));
+    },
+    replaceStateSnapshot(incoming) {
+      state = normalizeState(incoming);
+      dirty = false;
+      if (!memoryOnly) {
+        save(false);
+      }
+    },
     getSettings() {
       load();
       return { ...state.settings };
@@ -345,7 +377,14 @@ function createPureNodeStore(dbPath) {
   };
 }
 
-function createDatabaseBackend(dbPath = DEFAULT_DB_PATH) {
+function createDatabaseBackend(dbPath = DEFAULT_DB_PATH, options = {}) {
+  if (options.forcePure) {
+    return {
+      type: 'pure',
+      store: createPureNodeStore(dbPath, { memoryOnly: Boolean(options.memoryOnly) })
+    };
+  }
+
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -410,12 +449,65 @@ function createDatabaseBackend(dbPath = DEFAULT_DB_PATH) {
 }
 
 class AppDatabase {
-  constructor(dbPath = DEFAULT_DB_PATH, secretPath = undefined) {
+  constructor(dbPath = DEFAULT_DB_PATH, secretPath = undefined, options = {}) {
     this.dbPath = dbPath;
     this.secretPath = secretPath;
-    this.backend = createDatabaseBackend(dbPath);
+    this.backend = createDatabaseBackend(dbPath, options);
     this.cachedSettings = null;
     this.reload();
+  }
+
+  isDirty() {
+    return this.backend.type === 'pure' ? this.backend.store.isDirty() : false;
+  }
+
+  resetDirty() {
+    if (this.backend.type === 'pure') {
+      this.backend.store.resetDirty();
+    }
+  }
+
+  importStateSnapshot(snapshot) {
+    if (this.backend.type !== 'pure') {
+      throw new Error('importStateSnapshot solo aplica para el motor en memoria/JSON.');
+    }
+    this.backend.store.replaceStateSnapshot(snapshot);
+    this.reload();
+  }
+
+  exportStateSnapshot() {
+    if (this.backend.type === 'pure') {
+      return this.backend.store.getStateSnapshot();
+    }
+    const settings = this.backend.get('SELECT * FROM settings WHERE id = 1') || {};
+    const departments = this.backend.all('SELECT * FROM departments ORDER BY name ASC');
+    const advisors = this.backend.all('SELECT * FROM advisors ORDER BY id ASC');
+    const assignment_log = this.backend.all('SELECT * FROM assignment_log ORDER BY id ASC');
+    const assignment_events = this.backend.all('SELECT * FROM assignment_events ORDER BY id ASC');
+    const ticketOwnerRows = this.backend.all('SELECT * FROM ticket_owner');
+    const ticket_owner = {};
+    for (const r of ticketOwnerRows) {
+      if (r && r.ticket_id) {
+        ticket_owner[String(r.ticket_id)] = {
+          user_id: r.user_id || null,
+          updated_at: r.updated_at || null
+        };
+      }
+    }
+    const maxId = (arr) => arr.reduce((m, r) => Math.max(m, Number(r?.id) || 0), 0);
+    return {
+      settings,
+      departments,
+      advisors,
+      assignment_log,
+      assignment_events,
+      ticket_owner,
+      seq: {
+        advisors: maxId(advisors),
+        assignment_log: maxId(assignment_log),
+        assignment_events: maxId(assignment_events)
+      }
+    };
   }
 
   reload() {

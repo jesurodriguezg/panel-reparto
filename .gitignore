@@ -1,7 +1,10 @@
 node_modules/
+.netlify/
 data/app.db
 data/app.db-shm
 data/app.db-wal
+data/app.db.json
+data/netlify-seed.json
 data/.secret
 .env
 npm-debug.log*

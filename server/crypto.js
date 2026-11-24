@@ -7,9 +7,18 @@ const path = require('node:path');
 const DEFAULT_SECRET_PATH = path.join(__dirname, '..', 'data', '.secret');
 
 /**
- * Obtiene o genera la clave maestra de 32 bytes (AES-256) en data/.secret.
+ * Obtiene o genera la clave maestra de 32 bytes (AES-256).
+ * En entornos serverless (Netlify), prioriza la variable de entorno PANEL_SECRET_KEY
+ * (64 caracteres hex) cuando se usa la ruta por defecto, evitando depender del disco local.
  */
 function getOrCreateSecretKey(secretPath = DEFAULT_SECRET_PATH) {
+  if (secretPath === DEFAULT_SECRET_PATH && process.env.PANEL_SECRET_KEY) {
+    const envRaw = String(process.env.PANEL_SECRET_KEY).trim();
+    const envKey = Buffer.from(envRaw, 'hex');
+    if (envKey.length === 32) {
+      return envKey;
+    }
+  }
   const dir = path.dirname(secretPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

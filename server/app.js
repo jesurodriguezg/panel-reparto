@@ -356,8 +356,16 @@ function aggregateEvents({ events, granularity, start, end, advisors, liveUsers,
   };
 }
 
-function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } = {}) {
-  const appDb = new AppDatabase(dbPath, secretPath);
+function createServerApp({
+  dbPath,
+  secretPath,
+  host = '127.0.0.1',
+  fetchImpl,
+  disablePolling = false,
+  forcePure = false,
+  memoryOnly = false
+} = {}) {
+  const appDb = new AppDatabase(dbPath, secretPath, { forcePure, memoryOnly });
   const wtClient = new WhaticketClient(appDb, { fetchImpl });
   const publicDir = path.join(__dirname, '..', 'public');
 
@@ -539,6 +547,9 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
       clearInterval(pollingTimer);
       pollingTimer = null;
     }
+    if (disablePolling) {
+      return;
+    }
     const sec = Math.max(5, Number(appDb.getRawSettings().polling_sec || 20));
     pollingTimer = setInterval(() => {
       refreshBoardState({ forceRefresh: true })
@@ -588,10 +599,19 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
         req.on('error', reject);
       });
 
+    const isHttps =
+      String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https' ||
+      Boolean(req.socket?.encrypted);
+    const buildSessionCookie = (value, maxAge) =>
+      `panel_session=${value}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAge}${
+        isHttps ? '; Secure' : ''
+      }`;
+
     // Regla de seguridad clave:
-    // Mientras la app no esté configurada, el asistente solo es accesible desde localhost.
+    // Mientras la app no esté configurada en local, el asistente solo es accesible desde localhost.
     const setupStatus = appDb.getSetupStatus(host);
-    if (!setupStatus.configured && !isLocalhostIp(clientIp)) {
+    const allowRemoteSetup = process.env.NETLIFY === 'true';
+    if (!setupStatus.configured && !allowRemoteSetup && !isLocalhostIp(clientIp)) {
       if (pathname.startsWith('/api/')) {
         return sendJson(403, {
           error: 'Configura la app desde el equipo donde está instalada'
@@ -641,9 +661,7 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
           200,
           { ok: true },
           {
-            'Set-Cookie': `panel_session=${encodeURIComponent(
-              token
-            )}; HttpOnly; Path=/; SameSite=Strict; Max-Age=43200`
+            'Set-Cookie': buildSessionCookie(encodeURIComponent(token), 43200)
           }
         );
       } catch (err) {
@@ -656,7 +674,7 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
         200,
         { ok: true },
         {
-          'Set-Cookie': 'panel_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0'
+          'Set-Cookie': buildSessionCookie('', 0)
         }
       );
     }
@@ -764,9 +782,7 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
             { auth: true, exp: Date.now() + 12 * 3600 * 1000 },
             secretPath
           );
-          extraHeaders['Set-Cookie'] = `panel_session=${encodeURIComponent(
-            token
-          )}; HttpOnly; Path=/; SameSite=Strict; Max-Age=43200`;
+          extraHeaders['Set-Cookie'] = buildSessionCookie(encodeURIComponent(token), 43200);
         }
         return sendJson(200, cfg, extraHeaders);
       }
@@ -779,6 +795,9 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
       }
 
       if (pathname === '/api/stream' && method === 'GET') {
+        if (disablePolling) {
+          return sendJson(200, { sseSupported: false, pollingRecommended: true });
+        }
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
@@ -1500,6 +1519,8 @@ function createServerApp({ dbPath, secretPath, host = '127.0.0.1', fetchImpl } =
     appDb,
     wtClient,
     handleRequest,
+    refreshBoardState,
+    runAutoAssign,
     createHttpServer() {
       return http.createServer(serverHandler);
     },

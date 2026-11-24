@@ -1808,10 +1808,25 @@
     }
   }
 
-  // --- CONEXIÓN SSE Y ARRANQUE INICIAL ---
+  // --- CONEXIÓN SSE (CON RESPALDO POR POLLING EN NETLIFY SERVERLESS) ---
+  let boardPollTimer = null;
+
+  function startFallbackPolling() {
+    if (boardPollTimer) return;
+    const intervalSec = Math.max(10, Number(state.config?.pollingSec || 20));
+    boardPollTimer = setInterval(async () => {
+      if (document.hidden || !state.configured) return;
+      try {
+        state.board = await api('/api/board');
+        renderBoard();
+      } catch {}
+    }, intervalSec * 1000);
+  }
+
   function connectSse() {
     if (state.sse) {
       state.sse.close();
+      state.sse = null;
     }
     try {
       const es = new EventSource('/api/stream');
@@ -1821,8 +1836,16 @@
           renderBoard();
         } catch {}
       });
+      es.addEventListener('error', () => {
+        // En Netlify Functions (/api/stream no es SSE persistente), pasar a polling automático
+        es.close();
+        if (state.sse === es) state.sse = null;
+        startFallbackPolling();
+      });
       state.sse = es;
-    } catch {}
+    } catch {
+      startFallbackPolling();
+    }
   }
 
   async function initApp() {
