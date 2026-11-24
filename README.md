@@ -1,4 +1,4 @@
-# Panel de Reparto — Motos Alfa (Hero MotoCorp Cartagena)
+# Panel de Reparto
 
 Aplicación web local en español para el **supervisor de ventas** de **Motos Alfa**. Conecta en tiempo real con la [API oficial de Whaticket (`v1`)](https://api.whaticket.com/api/v1/openapi.json), detecta tickets **En espera** (incluyendo los que llegan sin departamento asignado) y **Sin responder**, y permite reasignarlos o repartirlos equitativamente entre asesores de **Digital** y **Sala** con un clic.
 
