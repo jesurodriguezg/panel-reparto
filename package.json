@@ -1,0 +1,17 @@
+{
+  "name": "panel-de-reparto-motos-alfa",
+  "version": "1.0.0",
+  "description": "Panel de Reparto de tickets de Whaticket en tiempo real para Motos Alfa (Hero MotoCorp Cartagena)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.1"
+  }
+}

@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel de Reparto — Motos Alfa (Hero MotoCorp)</title>
+  <script>
+    // Evitar parpadeo de tema al cargar (respeta localStorage y prefers-color-scheme)
+    (function () {
+      try {
+        var saved = localStorage.getItem('panel_reparto_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Franja visible cuando el modo simulación (DRY_RUN) está activo -->
+  <div id="dryRunBanner" class="top-banner dry-run hidden" role="status">
+    <span>MODO SIMULACIÓN (DRY_RUN) ACTIVO: Las reasignaciones y repartos se simulan localmente y NO modifican Whaticket.</span>
+    <button id="btnDisableDryRunQuick" type="button" class="btn btn-sm">Ir a Configuración</button>
+  </div>
+
+  <!-- Franja visible cuando ocurre un 401 durante el uso normal -->
+  <div id="authErrorBanner" class="top-banner auth-error hidden" role="alert">
+    <span id="authErrorText">El token ya no es válido, actualízalo en Configuración</span>
+    <button id="btnFixTokenBanner" type="button" class="btn btn-sm btn-danger">Actualizar token</button>
+  </div>
+
+  <!-- Header principal -->
+  <header class="app-header">
+    <div class="brand-group">
+      <div class="brand-logo" aria-hidden="true">MA</div>
+      <div>
+        <h1 class="brand-title">Panel de Reparto</h1>
+        <p class="brand-subtitle">Motos Alfa · Hero MotoCorp · Cartagena</p>
+      </div>
+    </div>
+
+    <nav class="nav-tabs" aria-label="Navegación principal">
+      <button type="button" class="nav-tab active" data-view="board">Tablero</button>
+      <button type="button" class="nav-tab" data-view="overview">Vista general</button>
+      <button type="button" class="nav-tab" data-view="reports">Informes</button>
+      <button type="button" class="nav-tab" data-view="advisors">Por asesor</button>
+      <button type="button" class="nav-tab" data-view="history">Historial</button>
+      <button type="button" class="nav-tab" data-view="settings">Configuración</button>
+    </nav>
+
+    <div class="header-meta">
+      <div class="conn-pill" title="Estado de conexión con Whaticket">
+        <span id="connDot" class="conn-dot"></span>
+        <span id="connStatusText">Sin configurar</span>
+      </div>
+      <span id="lastUpdatedText" class="contact-number">Últ. act.: --:--:--</span>
+      <button id="btnRefreshNow" type="button" class="btn btn-sm" title="Actualizar tablero ahora">Actualizar</button>
+      <button id="btnLockPin" type="button" class="btn btn-sm" title="Bloquear sesión con PIN">Bloquear PIN</button>
+      <button id="btnThemeToggle" type="button" class="btn btn-sm" aria-label="Cambiar tema claro u oscuro">Tema</button>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Estado vacío cuando la app no está configurada -->
+    <section id="unconfiguredEmptyState" class="card empty-state hidden">
+      <h2>Aplicación pendiente de primera configuración</h2>
+      <p>Conecta el Panel de Reparto con la API de Whaticket, importa tus asesores y define las reglas antes de operar.</p>
+      <button id="btnOpenWizardFromEmpty" type="button" class="btn btn-primary">Configurar</button>
+    </section>
+
+    <!-- ASISTENTE DE PRIMERA CONFIGURACIÓN (4 PASOS) -->
+    <section id="wizardSection" class="wizard-container hidden" aria-label="Asistente de configuración">
+      <div class="steps-indicator">
+        <div id="stepPill1" class="step-pill active">1. Conexión Whaticket</div>
+        <div id="stepPill2" class="step-pill">2. Asesores y Dptos.</div>
+        <div id="stepPill3" class="step-pill">3. Reglas y Semáforo</div>
+        <div id="stepPill4" class="step-pill">4. Acceso y Resumen</div>
+      </div>
+
+      <!-- Paso 1 -->
+      <div id="wizardStep1" class="card">
+        <h2>Paso 1: Conexión con Whaticket</h2>
+        <p class="form-hint">Ingresa la URL base de la API oficial de Whaticket y el token generado en Integraciones &gt; Tokens.</p>
+
+        <div class="form-group">
+          <label class="form-label" for="wizBaseUrl">URL base de la API</label>
+          <input id="wizBaseUrl" type="url" class="input" style="width:100%" value="https://api.whaticket.com/api/v1" required />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="wizToken">Token de API</label>
+          <div style="display:flex; gap:8px;">
+            <input id="wizToken" type="password" class="input" style="flex:1" placeholder="Pega aquí tu token Bearer de Whaticket" autocomplete="off" />
+            <button id="btnToggleWizToken" type="button" class="btn">Mostrar</button>
+          </div>
+          <div id="wizSavedTokenHint" class="form-hint hidden"></div>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px;">
+          <button id="btnTestConnectionWiz" type="button" class="btn">Probar conexión</button>
+          <button id="btnWizNext1" type="button" class="btn btn-primary" disabled>Siguiente</button>
+        </div>
+
+        <div id="wizConnResult" class="status-box hidden" role="status"></div>
+      </div>
+
+      <!-- Paso 2 -->
+      <div id="wizardStep2" class="card hidden">
+        <div class="section-header">
+          <h2 style="margin:0">Paso 2: Asesores y departamentos</h2>
+          <button id="btnReimportWiz" type="button" class="btn btn-sm">Volver a importar</button>
+        </div>
+        <p class="form-hint">Configura quiénes participan como asesores, su área (Digital o Sala), disponibilidad y tope máximo de tickets abiertos/pendientes.</p>
+
+        <div class="form-group">
+          <label class="form-label" for="wizSupervisorSelect">Usuario supervisor (para el botón "Tomar yo")</label>
+          <select id="wizSupervisorSelect" class="select" style="width:100%"></select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Departamentos detectados en Whaticket</label>
+          <div id="wizDepartmentsList" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+        </div>
+
+        <div class="table-wrapper" style="margin-bottom:16px;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Incluir</th>
+                <th>Foto</th>
+                <th>Nombre visible</th>
+                <th>Tipo</th>
+                <th>Disponible</th>
+                <th>Tope máx.</th>
+                <th>Nivel</th>
+              </tr>
+            </thead>
+            <tbody id="wizAdvisorsTbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Agregar asesor manualmente por UUID si no está en una cola -->
+        <div class="card" style="background-color:var(--bg); margin-bottom:16px;">
+          <div class="form-label">Añadir usuario manualmente por UUID de Whaticket (opcional)</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <input id="manualUserId" type="text" class="input input-sm" placeholder="UUID del usuario en Whaticket" style="flex:1" />
+            <input id="manualUserName" type="text" class="input input-sm" placeholder="Nombre visible (ej. Claudia Díaz)" style="flex:1" />
+            <button id="btnAddManualUser" type="button" class="btn btn-sm">Añadir a la lista</button>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between;">
+          <button id="btnWizPrev2" type="button" class="btn">Anterior</button>
+          <button id="btnWizNext2" type="button" class="btn btn-primary">Guardar y siguiente</button>
+        </div>
+      </div>
+
+      <!-- Paso 3 -->
+      <div id="wizardStep3" class="card hidden">
+        <h2>Paso 3: Reglas de negocio y semáforo</h2>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="wizGreenMin">Semáforo Verde (menos de X min)</label>
+            <input id="wizGreenMin" type="number" min="1" max="120" class="input" style="width:100%" value="5" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="wizYellowMin">Semáforo Amarillo (hasta X min; mayor es Rojo)</label>
+            <input id="wizYellowMin" type="number" min="2" max="240" class="input" style="width:100%" value="15" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="wizUnansweredMin">Minutos para "Sin responder"</label>
+            <input id="wizUnansweredMin" type="number" min="1" max="240" class="input" style="width:100%" value="5" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="wizProtectionMin">Minutos de protección (actividad reciente)</label>
+            <input id="wizProtectionMin" type="number" min="0" max="60" class="input" style="width:100%" value="3" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="wizDefaultMode">Modo de reparto por defecto</label>
+            <select id="wizDefaultMode" class="select" style="width:100%">
+              <option value="weighted">Turnos por Nivel (uno a la vez, según nivel)</option>
+              <option value="least_load">Menor carga</option>
+              <option value="round_robin">Turnos simples (Round-Robin)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="wizPollingSec">Intervalo de actualización (segundos)</label>
+            <input id="wizPollingSec" type="number" min="5" max="300" class="input" style="width:100%" value="20" />
+          </div>
+        </div>
+
+        <div class="card" style="background-color:var(--bg); margin-bottom:16px;">
+          <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; margin-bottom:10px;">
+            <input id="wizAutoAssignEnabled" type="checkbox" style="margin-top:4px;" />
+            <div>
+              <strong>Asignación automática por reglas (en segundo plano)</strong>
+              <div class="form-hint">
+                Reparte automáticamente los tickets "En espera" en cada ciclo usando el modo por defecto (ej. Ponderado por peso o Menor carga), respetando topes y protección.
+              </div>
+            </div>
+          </label>
+          <div class="form-row">
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label" for="wizAutoMinWait">Espera mínima antes de auto-asignar (min)</label>
+              <input id="wizAutoMinWait" type="number" min="0" max="240" class="input input-sm" style="width:100%" value="0" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label" for="wizAutoType">Área para auto-asignación</label>
+              <select id="wizAutoType" class="select select-sm" style="width:100%">
+                <option value="all">Todos (Digital y Sala)</option>
+                <option value="Digital">Solo Digital</option>
+                <option value="Sala">Solo Sala</option>
+              </select>
+            </div>
+          </div>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-size:12px; cursor:pointer;">
+            <input id="wizAutoOnlyOnline" type="checkbox" checked />
+            <span>Asignar automáticamente solo a asesores que estén en línea en Whaticket</span>
+          </label>
+        </div>
+
+        <div class="card" style="background-color:var(--bg); margin-bottom:16px;">
+          <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+            <input id="wizDryRun" type="checkbox" checked style="margin-top:4px;" />
+            <div>
+              <strong>Modo simulación (DRY_RUN) — Activado por defecto</strong>
+              <div class="form-hint">
+                En modo simulación, el Panel de Reparto lee los tickets reales de Whaticket pero <strong>no ejecuta llamadas de escritura</strong> al reasignar o repartir. Ideal para verificar las reglas con seguridad antes de pasar a producción.
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div style="display:flex; justify-content:space-between;">
+          <button id="btnWizPrev3" type="button" class="btn">Anterior</button>
+          <button id="btnWizNext3" type="button" class="btn btn-primary">Guardar y siguiente</button>
+        </div>
+      </div>
+
+      <!-- Paso 4 -->
+      <div id="wizardStep4" class="card hidden">
+        <h2>Paso 4: Acceso con PIN y resumen</h2>
+        <div class="form-group">
+          <label class="form-label" for="wizPin">PIN de acceso obligatorio (mínimo 4 dígitos/caracteres)</label>
+          <input id="wizPin" type="password" class="input" style="width:100%" placeholder="Ingresa un PIN (mín. 4 caracteres) o déjalo en blanco si ya tienes uno guardado" autocomplete="new-password" />
+          <div id="wizPinHint" class="form-hint">El sistema solicitará este PIN para entrar al panel. Se almacena cifrado con hash scrypt.</div>
+        </div>
+
+        <div class="card" style="background-color:var(--bg); margin-bottom:16px;">
+          <h3 style="margin-top:0; font-size:14px;">Resumen de configuración</h3>
+          <div id="wizSummaryContent" class="form-hint" style="color:var(--text);"></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between;">
+          <button id="btnWizPrev4" type="button" class="btn">Anterior</button>
+          <button id="btnWizFinish" type="button" class="btn btn-primary">Guardar y abrir el tablero</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- VISTA 1: TABLERO PRINCIPAL -->
+    <section id="viewBoard" class="hidden">
+      <div class="kpi-grid">
+        <div class="card">
+          <div class="kpi-label">En espera</div>
+          <div id="kpiWaiting" class="kpi-value">0</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">Sin responder</div>
+          <div id="kpiUnanswered" class="kpi-value warning">0</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">Críticos (Rojo)</div>
+          <div id="kpiCritical" class="kpi-value danger">0</div>
+        </div>
+        <div class="card">
+          <div class="kpi-label">Asesores disponibles / En línea</div>
+          <div id="kpiAdvisors" class="kpi-value success">0</div>
+          <div id="kpiOnlineSubtext" class="contact-number" style="margin-top:4px;">En línea: 0 · Sin resp. en línea: 0</div>
+        </div>
+      </div>
+
+      <!-- Barra de búsqueda y filtro por día, mes y año en el tablero -->
+      <div class="card section-block filter-bar">
+        <div class="search-input-wrap">
+          <input
+            id="boardSearchInput"
+            type="search"
+            class="input input-sm"
+            style="width:100%;"
+            placeholder="Buscar por nombre o teléfono (cliente o asesor)..."
+            aria-label="Buscar por nombre o teléfono de cliente o usuario"
+          />
+        </div>
+        <div class="toolbar-group">
+          <label class="form-label" style="margin:0;" for="boardPeriodMode">Filtrar vista:</label>
+          <select id="boardPeriodMode" class="select select-sm">
+            <option value="all">Todos los activos</option>
+            <option value="day">Por día</option>
+            <option value="month">Por mes</option>
+            <option value="year">Por año</option>
+          </select>
+          <input id="boardPeriodDate" type="date" class="input input-sm hidden" aria-label="Filtrar por día" />
+          <input id="boardPeriodMonth" type="month" class="input input-sm hidden" aria-label="Filtrar por mes" />
+          <input id="boardPeriodYear" type="number" min="2020" max="2100" class="input input-sm hidden" style="width:90px;" placeholder="Año" aria-label="Filtrar por año" />
+          <button id="btnClearBoardFilters" type="button" class="btn btn-sm">Limpiar filtros</button>
+        </div>
+      </div>
+
+      <!-- Controles de reparto masivo y asignación automática -->
+      <div class="card section-block" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+        <div class="toolbar-group">
+          <label class="form-label" style="margin:0;" for="boardDistMode">Modo de reparto:</label>
+          <select id="boardDistMode" class="select select-sm">
+            <option value="weighted">Turnos por Nivel (uno a la vez)</option>
+            <option value="least_load">Menor carga</option>
+            <option value="round_robin">Turnos simples (Round-Robin)</option>
+          </select>
+
+          <label class="form-label" style="margin:0;" for="boardAdvisorType">Filtro de asesor:</label>
+          <select id="boardAdvisorType" class="select select-sm">
+            <option value="">Todos (Digital y Sala)</option>
+            <option value="Digital">Solo Digital</option>
+            <option value="Sala">Solo Sala</option>
+          </select>
+
+          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; margin-left:8px; cursor:pointer;">
+            <input id="chkBoardAutoAssign" type="checkbox" />
+            <span>Reparto automático activo</span>
+          </label>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="btnOpenExportContactsModal" type="button" class="btn">
+            Exportar contactos Whaticket
+          </button>
+          <button id="btnDistributeWaiting" type="button" class="btn btn-primary">
+            Repartir equitativo ("En espera")
+          </button>
+        </div>
+      </div>
+
+      <!-- Resumen en vivo de cada usuario desde el tablero (foto, en línea, asignados hoy/actuales, sin responder) -->
+      <div class="section-block">
+        <div class="section-header">
+          <h2 class="section-title">Estado de usuarios en tiempo real</h2>
+          <div class="toolbar-group">
+            <span id="onlineSummaryBadge" class="badge">0 en línea</span>
+            <span id="onlineUnansweredBadge" class="badge">0 sin responder en línea</span>
+          </div>
+        </div>
+        <div id="boardAdvisorsStrip" class="board-advisors-strip"></div>
+      </div>
+
+      <!-- Lista 1: En espera -->
+      <div class="section-block">
+        <div class="section-header">
+          <h2 class="section-title">Tickets en espera (sin asesor o estado pendiente)</h2>
+          <span id="waitingCountBadge" class="badge">0 tickets</span>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:36px;"><input id="chkAllWaiting" type="checkbox" aria-label="Seleccionar todos en espera" /></th>
+                <th>Cliente</th>
+                <th>Canal</th>
+                <th>Departamento</th>
+                <th>Asesor actual</th>
+                <th>Último mensaje</th>
+                <th>Tiempo / Semáforo</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyWaiting"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Lista 2: Sin responder -->
+      <div class="section-block">
+        <div class="section-header">
+          <h2 class="section-title">Tickets sin responder (último mensaje del cliente)</h2>
+          <span id="unansweredCountBadge" class="badge">0 tickets</span>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:36px;"><input id="chkAllUnanswered" type="checkbox" aria-label="Seleccionar todos sin responder" /></th>
+                <th>Cliente</th>
+                <th>Canal</th>
+                <th>Departamento</th>
+                <th>Asesor actual</th>
+                <th>Último mensaje</th>
+                <th>Tiempo / Semáforo</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyUnanswered"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VISTA GENERAL: ASIGNADOS POR USUARIO (HISTORIAL POR DÍA, MES Y AÑO) -->
+    <section id="viewOverview" class="hidden">
+      <div class="section-header">
+        <h2 class="section-title">Vista general de tickets asignados por usuario</h2>
+        <div class="toolbar-group">
+          <label class="form-label" style="margin:0;" for="ovGranularity">Vista:</label>
+          <select id="ovGranularity" class="select select-sm">
+            <option value="month" selected>Por mes (días por usuario)</option>
+            <option value="day">Por día (horas)</option>
+            <option value="year">Por año (meses del año)</option>
+          </select>
+          <input id="ovDateInput" type="date" class="input input-sm hidden" aria-label="Fecha del día" />
+          <input id="ovMonthInput" type="month" class="input input-sm" aria-label="Mes" />
+          <input id="ovYearInput" type="number" min="2020" max="2100" class="input input-sm hidden" style="width:92px;" aria-label="Año" />
+          <select id="ovUserSelect" class="select select-sm">
+            <option value="">Todos los usuarios</option>
+          </select>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px;">
+            <input id="ovIncludeSim" type="checkbox" checked />
+            <span>Incluir simulación</span>
+          </label>
+          <button id="btnRefreshOverview" type="button" class="btn btn-sm btn-primary">Consultar</button>
+        </div>
+      </div>
+
+      <div id="overviewTotalsBanner" class="card section-block" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;"></div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 id="overviewMatrixTitle" class="section-title" style="font-size:14px;">Tabla de usuarios: tickets asignados por día (ordenados por mes)</h3>
+          <span class="form-hint" style="margin:0;">Haz clic en el nombre de cualquier usuario para ver sus tickets y su cantidad diaria en grande</span>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead id="theadOverviewMatrix"></thead>
+            <tbody id="tbodyOverviewMatrix"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:14px;">Historial diario por usuario (ordenado por mes y día)</h3>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Mes</th>
+                <th>Fecha (Día)</th>
+                <th>Usuario</th>
+                <th>Área / Nivel</th>
+                <th>Tickets asignados ese día</th>
+                <th>Manual</th>
+                <th>Reparto / Auto</th>
+                <th>Whaticket</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyOverviewDailyByMonth"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:14px;">Resumen consolidado por usuario en el periodo</h3>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Estado</th>
+                <th>Área / Nivel</th>
+                <th>Total asignados</th>
+                <th>Manual</th>
+                <th>Reparto</th>
+                <th>Automático</th>
+                <th>Liberación</th>
+                <th>Whaticket</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyOverviewUsers"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VISTA DE INFORMES MENSUALES POR USUARIO -->
+    <section id="viewReports" class="hidden">
+      <div class="section-header no-print">
+        <h2 class="section-title">Informes mensuales por usuario</h2>
+        <div class="toolbar-group">
+          <label class="form-label" style="margin:0;" for="repMonthInput">Mes:</label>
+          <input id="repMonthInput" type="month" class="input input-sm" />
+          <label class="form-label" style="margin:0;" for="repUserSelect">Usuario:</label>
+          <select id="repUserSelect" class="select select-sm">
+            <option value="">Todos los usuarios</option>
+          </select>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px;">
+            <input id="repIncludeSim" type="checkbox" checked />
+            <span>Incluir simulación</span>
+          </label>
+          <button id="btnGenerateReport" type="button" class="btn btn-sm btn-primary">Generar informe</button>
+          <button id="btnExportReportCsv" type="button" class="btn btn-sm">Exportar CSV</button>
+          <button id="btnPrintReport" type="button" class="btn btn-sm">Imprimir / PDF</button>
+        </div>
+      </div>
+
+      <div id="reportHeaderCard" class="card section-block"></div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:14px;">Consolidado mensual por usuario</h3>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Área</th>
+                <th>Nivel</th>
+                <th>Total del mes</th>
+                <th>Manual</th>
+                <th>Reparto</th>
+                <th>Automático</th>
+                <th>Whaticket</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyReportSummary"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:14px;">Asignaciones por día del mes</h3>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Día del mes</th>
+                <th>Tickets asignados</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyReportDaily"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:14px;">Detalle de tickets asignados en el mes</h3>
+        </div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Fecha y hora</th>
+                <th>Usuario asignado</th>
+                <th>Cliente</th>
+                <th>Teléfono</th>
+                <th>Ticket ID</th>
+                <th>Origen</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyReportItems"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VISTA 2: POR ASESOR -->
+    <section id="viewAdvisors" class="hidden">
+      <div class="section-header">
+        <h2 class="section-title">Carga y disponibilidad por asesor</h2>
+      </div>
+      <div id="advisorsCardsGrid" class="advisors-grid"></div>
+    </section>
+
+    <!-- VISTA 3: HISTORIAL -->
+    <section id="viewHistory" class="hidden">
+      <div class="section-header">
+        <h2 class="section-title">Historial de asignaciones y repartos</h2>
+        <div class="toolbar-group">
+          <input id="logDateFrom" type="date" class="input input-sm" aria-label="Fecha desde" />
+          <input id="logDateTo" type="date" class="input input-sm" aria-label="Fecha hasta" />
+          <input id="logAdvisorFilter" type="text" class="input input-sm" placeholder="Filtrar por asesor..." />
+          <select id="logResultFilter" class="select select-sm">
+            <option value="">Todos los resultados</option>
+            <option value="ok">OK</option>
+            <option value="simulacion">Simulación (DRY_RUN)</option>
+            <option value="error">Error</option>
+          </select>
+          <button id="btnFilterLogs" type="button" class="btn btn-sm">Filtrar</button>
+          <button id="btnExportCsv" type="button" class="btn btn-sm">Exportar CSV</button>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Fecha y hora</th>
+              <th>Ticket ID</th>
+              <th>Cliente</th>
+              <th>Origen</th>
+              <th>Destino</th>
+              <th>Acción</th>
+              <th>Resultado</th>
+              <th>Detalle / Reintento</th>
+            </tr>
+          </thead>
+          <tbody id="tbodyLogs"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VISTA 4: CONFIGURACIÓN COMPLETA EN CALIENTE -->
+    <section id="viewSettings" class="hidden">
+      <div class="section-header">
+        <h2 class="section-title">Configuración del sistema (recarga en caliente)</h2>
+        <div class="toolbar-group">
+          <button id="btnLaunchWizardAgain" type="button" class="btn btn-sm">Abrir asistente paso a paso</button>
+          <button id="btnDeleteSavedToken" type="button" class="btn btn-sm btn-danger">Borrar token guardado</button>
+        </div>
+      </div>
+      <p class="form-hint">Usa el botón "Abrir asistente paso a paso" o edita directamente cada sección desde el asistente con recarga inmediata sin reiniciar el servidor.</p>
+      <div id="settingsQuickSummary" class="card"></div>
+    </section>
+  </main>
+
+  <!-- Barra de acciones flotante para selección múltiple -->
+  <div id="floatingMultiBar" class="floating-bar hidden" role="region" aria-label="Acciones de selección múltiple">
+    <span id="multiSelectedCount" style="font-weight:700;">0 seleccionados</span>
+    <select id="multiAssignAdvisorSelect" class="select select-sm"></select>
+    <button id="btnMultiAssignManual" type="button" class="btn btn-sm">Asignar a seleccionado</button>
+    <button id="btnMultiDistribute" type="button" class="btn btn-sm btn-primary">Repartir seleccionados</button>
+    <button id="btnMultiTakeMe" type="button" class="btn btn-sm">Tomar yo</button>
+    <button id="btnMultiClear" type="button" class="btn btn-sm">Limpiar</button>
+  </div>
+
+  <!-- Modal de confirmación con vista previa antes de movimientos masivos -->
+  <div id="previewModalBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+    <div class="modal-card">
+      <h3 id="previewModalTitle" class="modal-title">Confirmar movimiento masivo</h3>
+      <p id="previewModalSummary" style="font-weight:600;"></p>
+      <div id="previewModalList" style="max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:8px; margin-bottom:12px;"></div>
+      <div id="previewProtectedNotice" class="status-box hidden"></div>
+      <label id="previewForceWrap" class="hidden" style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:8px;">
+        <input id="chkForceProtected" type="checkbox" />
+        <span>Forzar movimiento de tickets con actividad reciente (ignorar protección)</span>
+      </label>
+      <div class="modal-actions">
+        <button id="btnCancelPreviewModal" type="button" class="btn">Cancelar</button>
+        <button id="btnConfirmPreviewModal" type="button" class="btn btn-primary">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de tickets asignados a un usuario (al hacer clic sobre su nombre) -->
+  <div id="userTicketsModalBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="userTicketsModalTitle">
+    <div class="modal-card modal-lg">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+        <div id="userTicketsModalHeaderInfo" style="display:flex; align-items:center; gap:12px;"></div>
+        <div class="toolbar-group" style="width:auto;">
+          <label class="form-label" style="margin:0;" for="userModalDateInput">Día:</label>
+          <input id="userModalDateInput" type="date" class="input input-sm" />
+          <button id="btnCloseUserTicketsModal" type="button" class="btn btn-sm">Cerrar</button>
+        </div>
+      </div>
+
+      <!-- Cantidad por día EN GRANDE -->
+      <div class="hero-stat-grid">
+        <div class="hero-stat-box">
+          <div id="userModalDayLabel" class="kpi-label">Asignados en el día</div>
+          <div id="userModalBigDayCount" class="hero-stat-number">0</div>
+        </div>
+        <div class="hero-stat-box">
+          <div class="kpi-label">Activos ahora mismo</div>
+          <div id="userModalBigActiveCount" class="hero-stat-number sm">0 / 15</div>
+        </div>
+        <div class="hero-stat-box">
+          <div class="kpi-label">Sin responder ahora</div>
+          <div id="userModalBigUnansweredCount" class="hero-stat-number warn">0</div>
+        </div>
+      </div>
+
+      <div class="section-block" style="margin-bottom:16px;">
+        <h4 style="margin:0 0 8px 0; font-size:13px;">Tickets activos asignados actualmente a este usuario</h4>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Canal</th>
+                <th>Departamento</th>
+                <th>Último mensaje</th>
+                <th>Tiempo / Semáforo</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyUserModalActive"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block" style="margin-bottom:16px;">
+        <h4 style="margin:0 0 8px 0; font-size:13px;">Tickets asignados a este usuario en el día seleccionado</h4>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Cliente</th>
+                <th>Teléfono</th>
+                <th>Ticket ID</th>
+                <th>Origen</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyUserModalDayEvents"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-block" style="margin-bottom:0;">
+        <h4 style="margin:0 0 8px 0; font-size:13px;">Cantidad asignada por día en este mes</h4>
+        <div id="userModalDailyPills" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal para exportar contactos limpios de Whaticket (.xlsx o .csv) -->
+  <div id="exportContactsModalBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="exportContactsModalTitle">
+    <div class="modal-card">
+      <h3 id="exportContactsModalTitle" class="modal-title">Exportar contactos de Whaticket</h3>
+      <p class="form-hint" style="margin-top:0;">
+        Consulta conversaciones en Whaticket, valida números celulares de WhatsApp en Colombia (10 dígitos iniciados en 3), elimina duplicados y descarga el archivo limpio sin guardar datos en BD.
+      </p>
+
+      <div class="form-group">
+        <span class="form-label">Formato de descarga</span>
+        <div class="export-format-group">
+          <label class="export-format-option">
+            <input type="radio" name="exportContactsFormat" value="xlsx" checked />
+            <div>
+              <strong>Excel (.xlsx)</strong>
+              <div class="form-hint" style="margin-top:2px;">Columna teléfono protegida como texto (@)</div>
+            </div>
+          </label>
+          <label class="export-format-option">
+            <input type="radio" name="exportContactsFormat" value="csv" />
+            <div>
+              <strong>CSV (.csv)</strong>
+              <div class="form-hint" style="margin-top:2px;">UTF-8 compatible con Excel sin notación científica</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="margin-bottom:0;">
+          <label class="form-label" for="exportContactsMinMessages">Mínimo de mensajes del cliente</label>
+          <select id="exportContactsMinMessages" class="select" style="width:100%;">
+            <option value="2" selected>Más de 1 mensaje (mín. 2)</option>
+            <option value="3">Más de 2 mensajes (mín. 3)</option>
+            <option value="4">Mínimo 4 mensajes del cliente</option>
+            <option value="5">Mínimo 5 mensajes del cliente</option>
+            <option value="1">Al menos 1 mensaje del cliente</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label class="form-label" for="exportContactsStatuses">Estado de conversaciones</label>
+          <select id="exportContactsStatuses" class="select" style="width:100%;">
+            <option value="open,pending,closed" selected>Todas (Abiertas, En espera y Cerradas)</option>
+            <option value="open,pending">Solo activas (Abiertas y En espera)</option>
+            <option value="closed">Solo cerradas</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="exportContactsLoading" class="loading-box hidden" role="status" aria-live="polite">
+        <span class="spinner-inline" aria-hidden="true"></span>
+        <span>Consultando conversaciones y validando números en Whaticket...</span>
+      </div>
+
+      <div id="exportContactsResult" class="status-box hidden" role="status"></div>
+
+      <div class="modal-actions">
+        <button id="btnCloseExportContactsModal" type="button" class="btn">Cerrar</button>
+        <button id="btnRunExportContacts" type="button" class="btn btn-primary">Consultar y descargar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de PIN cuando la sesión lo requiere -->
+  <div id="pinModalBackdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+    <div class="modal-card" style="max-width:380px;">
+      <h3 id="pinModalTitle" class="modal-title">Acceso con PIN</h3>
+      <p class="form-hint">Ingresa el PIN de supervisor para acceder al Panel de Reparto.</p>
+      <input id="pinLoginInput" type="password" class="input" style="width:100%; margin-top:8px;" placeholder="PIN" />
+      <div class="modal-actions">
+        <button id="btnSubmitPinLogin" type="button" class="btn btn-primary">Entrar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
